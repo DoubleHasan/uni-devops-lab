@@ -1,0 +1,102 @@
+---
+- name: Deploy Student Portal with Docker and Compose
+  hosts: app_servers
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Install required system packages
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Create keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Docker official GPG key
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+        force: no
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
+        state: present
+
+    - name: Install Docker and Docker Compose plugin
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Check if Docker daemon is running
+      command: docker info
+      register: docker_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Start Docker daemon if not running
+      shell: nohup dockerd --storage-driver=vfs >/var/log/dockerd.log 2>&1 &
+      when: docker_status.rc != 0
+
+    - name: Wait for Docker daemon to be ready
+      command: docker info
+      register: docker_ready
+      until: docker_ready.rc == 0
+      retries: 10
+      delay: 2
+      changed_when: false
+
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy Dockerfile and compose.yml to server
+      copy:
+        src: "../{{ item }}"
+        dest: "{{ app_dir }}/{{ item }}"
+      loop:
+        - Dockerfile
+        - compose.yml
+
+    - name: Copy app directory to server
+      copy:
+        src: "../app/"
+        dest: "{{ app_dir }}/app/"
+
+    - name: Start services using Docker Compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        state: present
+        build: policy
+
+    - name: Wait for portal health endpoint
+      uri:
+        url: "http://localhost:{{ app_port }}/health"
+        return_content: yes
+      register: health_check
+      until: health_check.status == 200
+      retries: 10
+      delay: 3
+      changed_when: false
+
+    - name: Display health check result
+      debug:
+        var: health_check.json
