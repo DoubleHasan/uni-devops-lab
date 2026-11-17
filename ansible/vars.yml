@@ -1,0 +1,3 @@
+app_dir: /opt/student-portal
+app_port: 8080
+image_name: "student-portal:1.0"
